@@ -5,74 +5,63 @@
 #include <algorithm>
 #include <sstream>
 #include <cstring>
-#include <unordered_map>
+#include <sys/stat.h>
 
-// Use a fixed number of bucket files to limit file count
-const int NUM_BUCKETS = 10;
-const std::string BASE_DIR = "storage";
+const std::string STORAGE_DIR = "storage";
+const std::string INDEX_FILE = STORAGE_DIR + "/index.dat";
+
+// Simple structure to hold index-value pairs
+struct Entry {
+    std::string index;
+    int value;
+
+    bool operator<(const Entry& other) const {
+        if (index != other.index) return index < other.index;
+        return value < other.value;
+    }
+
+    bool operator==(const Entry& other) const {
+        return index == other.index && value == other.value;
+    }
+};
 
 class FileStorage {
 private:
-    // Simple hash function to distribute indices across buckets
-    int get_bucket(const std::string& index) {
-        unsigned long hash = 0;
-        for (char c : index) {
-            hash = hash * 31 + c;
-        }
-        return hash % NUM_BUCKETS;
-    }
-
-    std::string get_bucket_filename(int bucket) {
-        return BASE_DIR + "/bucket_" + std::to_string(bucket) + ".dat";
-    }
-
     void ensure_directory() {
-        std::ifstream dir_check(BASE_DIR + "/.exists");
-        if (!dir_check.good()) {
-            std::system(("mkdir -p " + BASE_DIR).c_str());
-            std::ofstream marker(BASE_DIR + "/.exists");
-            marker.close();
+        struct stat st;
+        if (stat(STORAGE_DIR.c_str(), &st) != 0) {
+            mkdir(STORAGE_DIR.c_str(), 0755);
         }
     }
 
-    // Format: index:value1,value2,value3\n
-    void update_bucket(int bucket, const std::string& index, const std::vector<int>& values) {
-        std::string bucket_file = get_bucket_filename(bucket);
-        std::vector<std::string> all_entries;
+    std::vector<Entry> load_all_entries() {
+        std::vector<Entry> entries;
+        std::ifstream infile(INDEX_FILE);
 
-        // Read existing entries
-        std::ifstream infile(bucket_file);
         if (infile.is_open()) {
             std::string line;
             while (std::getline(infile, line)) {
                 if (!line.empty()) {
-                    size_t colon_pos = line.find(':');
-                    if (colon_pos != std::string::npos) {
-                        std::string existing_index = line.substr(0, colon_pos);
-                        if (existing_index != index) {
-                            all_entries.push_back(line);
-                        }
+                    std::istringstream iss(line);
+                    Entry e;
+                    if (iss >> e.index >> e.value) {
+                        entries.push_back(e);
                     }
                 }
             }
             infile.close();
         }
 
-        // Add updated entry if it has values
-        if (!values.empty()) {
-            std::string new_line = index + ":";
-            for (size_t i = 0; i < values.size(); i++) {
-                if (i > 0) new_line += ",";
-                new_line += std::to_string(values[i]);
-            }
-            all_entries.push_back(new_line);
-        }
+        // Sort entries
+        std::sort(entries.begin(), entries.end());
+        return entries;
+    }
 
-        // Write back to file - use binary mode for consistency
-        std::ofstream outfile(bucket_file, std::ios::trunc);
+    void save_all_entries(const std::vector<Entry>& entries) {
+        std::ofstream outfile(INDEX_FILE);
         if (outfile.is_open()) {
-            for (const std::string& entry : all_entries) {
-                outfile << entry << "\n";
+            for (const Entry& e : entries) {
+                outfile << e.index << " " << e.value << "\n";
             }
             outfile.close();
         }
@@ -84,68 +73,48 @@ public:
     }
 
     void insert(const std::string& index, int value) {
-        int bucket = get_bucket(index);
-        std::vector<int> values = find_internal(bucket, index);
+        std::vector<Entry> entries = load_all_entries();
 
-        // Add value if not already present
-        if (std::find(values.begin(), values.end(), value) == values.end()) {
-            values.push_back(value);
-            std::sort(values.begin(), values.end());
-            update_bucket(bucket, index, values);
+        // Check if entry already exists
+        Entry new_entry{index, value};
+        auto it = std::lower_bound(entries.begin(), entries.end(), new_entry);
+
+        // Only insert if not found
+        if (it == entries.end() || !(*it == new_entry)) {
+            entries.insert(it, new_entry);
+            save_all_entries(entries);
         }
     }
 
     void delete_entry(const std::string& index, int value) {
-        int bucket = get_bucket(index);
-        std::vector<int> values = find_internal(bucket, index);
+        std::vector<Entry> entries = load_all_entries();
+        Entry target{index, value};
 
-        // Remove value if present
-        auto it = std::find(values.begin(), values.end(), value);
-        if (it != values.end()) {
-            values.erase(it);
-            update_bucket(bucket, index, values);
+        auto it = std::lower_bound(entries.begin(), entries.end(), target);
+        if (it != entries.end() && *it == target) {
+            entries.erase(it);
+            save_all_entries(entries);
         }
     }
 
     std::vector<int> find(const std::string& index) {
-        int bucket = get_bucket(index);
-        return find_internal(bucket, index);
-    }
+        std::vector<Entry> entries = load_all_entries();
+        std::vector<int> result;
 
-private:
-    std::vector<int> find_internal(int bucket, const std::string& index) {
-        std::vector<int> values;
-        std::string bucket_file = get_bucket_filename(bucket);
+        // Find all entries with matching index
+        Entry start{index, 0};
+        Entry end{index, INT32_MAX};
 
-        std::ifstream infile(bucket_file);
-        if (infile.is_open()) {
-            std::string line;
-            while (std::getline(infile, line)) {
-                // Skip empty lines
-                if (line.empty()) continue;
+        auto start_it = std::lower_bound(entries.begin(), entries.end(), start);
+        auto end_it = std::lower_bound(entries.begin(), entries.end(), end);
 
-                size_t colon_pos = line.find(':');
-                if (colon_pos != std::string::npos) {
-                    std::string existing_index = line.substr(0, colon_pos);
-                    if (existing_index == index) {
-                        std::string values_str = line.substr(colon_pos + 1);
-                        if (!values_str.empty()) {
-                            std::stringstream ss(values_str);
-                            std::string value_str;
-                            while (std::getline(ss, value_str, ',')) {
-                                if (!value_str.empty()) {
-                                    values.push_back(std::stoi(value_str));
-                                }
-                            }
-                        }
-                        break;
-                    }
-                }
+        for (auto it = start_it; it != end_it; ++it) {
+            if (it->index == index) {
+                result.push_back(it->value);
             }
-            infile.close();
         }
 
-        return values;
+        return result;
     }
 };
 
