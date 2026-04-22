@@ -13,13 +13,13 @@ const std::string STORAGE_DIR = "storage";
 
 class FileStorage {
 private:
-    // Get filename based on hash of index
+    // Get filename based on hash of index - reduced to 5 buckets max
     std::string get_filename(const std::string& index) {
         unsigned long hash = 0;
         for (char c : index) {
             hash = hash * 31 + c;
         }
-        return STORAGE_DIR + "/bucket_" + std::to_string(hash % 37) + ".dat";  // 37 buckets
+        return STORAGE_DIR + "/bucket_" + std::to_string(hash % 5) + ".dat";  // Only 5 buckets
     }
 
     void ensure_directory() {
@@ -29,8 +29,8 @@ private:
         }
     }
 
-    // Binary search in a sorted file
-    bool binary_search_in_file(const std::string& filename, const std::string& index, int value, std::vector<int>& found_values) {
+    // Binary search in a sorted file - more efficient implementation
+    bool binary_search_in_file(const std::string& filename, const std::string& index, std::vector<int>& found_values) {
         std::ifstream infile(filename, std::ios::binary);
         if (!infile.is_open()) return false;
 
@@ -46,8 +46,8 @@ private:
         int left = 0;
         int right = (file_size / RECORD_SIZE) - 1;
 
-        bool found = false;
-
+        // First find any occurrence of the index
+        int found_pos = -1;
         while (left <= right) {
             int mid = left + (right - left) / 2;
             infile.seekg(mid * RECORD_SIZE);
@@ -58,57 +58,13 @@ private:
             infile.read(reinterpret_cast<char*>(&val), 4);
 
             std::string current_index(buffer);
-            // Remove padding
             size_t null_pos = current_index.find('\0');
             if (null_pos != std::string::npos) {
                 current_index = current_index.substr(0, null_pos);
             }
 
             if (current_index == index) {
-                // Found a match, now find all entries with this index
-                found = true;
-
-                // Search backwards for first occurrence
-                int first = mid;
-                while (first > left) {
-                    infile.seekg((first - 1) * RECORD_SIZE);
-                    char temp_buffer[65] = {0};
-                    infile.read(temp_buffer, 64);
-                    std::string temp_index(temp_buffer);
-                    size_t null_pos_temp = temp_index.find('\0');
-                    if (null_pos_temp != std::string::npos) {
-                        temp_index = temp_index.substr(0, null_pos_temp);
-                    }
-                    if (temp_index == index) {
-                        first--;
-                    } else {
-                        break;
-                    }
-                }
-
-                // Collect all values for this index
-                int current = first;
-                while (current <= right) {
-                    infile.seekg(current * RECORD_SIZE);
-                    char collect_buffer[65] = {0};
-                    int collect_val;
-                    infile.read(collect_buffer, 64);
-                    infile.read(reinterpret_cast<char*>(&collect_val), 4);
-
-                    std::string collect_index(collect_buffer);
-                    size_t null_pos_collect = collect_index.find('\0');
-                    if (null_pos_collect != std::string::npos) {
-                        collect_index = collect_index.substr(0, null_pos_collect);
-                    }
-
-                    if (collect_index == index) {
-                        found_values.push_back(collect_val);
-                        current++;
-                    } else {
-                        break;
-                    }
-                }
-
+                found_pos = mid;
                 break;
             } else if (current_index < index) {
                 left = mid + 1;
@@ -117,12 +73,76 @@ private:
             }
         }
 
+        if (found_pos == -1) return false;
+
+        // Find the first occurrence
+        int first = found_pos;
+        left = 0;
+        right = found_pos - 1;
+        while (left <= right) {
+            int mid = left + (right - left) / 2;
+            infile.seekg(mid * RECORD_SIZE);
+
+            char buffer[65] = {0};
+            infile.read(buffer, 64);
+
+            std::string current_index(buffer);
+            size_t null_pos = current_index.find('\0');
+            if (null_pos != std::string::npos) {
+                current_index = current_index.substr(0, null_pos);
+            }
+
+            if (current_index == index) {
+                first = mid;
+                right = mid - 1;
+            } else {
+                left = mid + 1;
+            }
+        }
+
+        // Find the last occurrence
+        int last = found_pos;
+        infile.seekg(0, std::ios::end);
+        std::streamsize total_records = infile.tellg() / RECORD_SIZE;
+        left = found_pos + 1;
+        right = total_records - 1;
+        while (left <= right) {
+            int mid = left + (right - left) / 2;
+            infile.seekg(mid * RECORD_SIZE);
+
+            char buffer[65] = {0};
+            infile.read(buffer, 64);
+
+            std::string current_index(buffer);
+            size_t null_pos = current_index.find('\0');
+            if (null_pos != std::string::npos) {
+                current_index = current_index.substr(0, null_pos);
+            }
+
+            if (current_index == index) {
+                last = mid;
+                left = mid + 1;
+            } else {
+                right = mid - 1;
+            }
+        }
+
+        // Collect all values
+        for (int i = first; i <= last; i++) {
+            infile.seekg(i * RECORD_SIZE);
+            char buffer[65] = {0};
+            int val;
+            infile.read(buffer, 64);
+            infile.read(reinterpret_cast<char*>(&val), 4);
+            found_values.push_back(val);
+        }
+
         infile.close();
-        return found;
+        return true;
     }
 
     void insert_to_file(const std::string& filename, const std::string& index, int value) {
-        // First, load all entries
+        // Load all entries
         std::vector<std::pair<std::string, int>> entries;
         std::ifstream infile(filename, std::ios::binary);
 
@@ -212,7 +232,7 @@ public:
 
         // First check if it already exists
         std::vector<int> found;
-        if (binary_search_in_file(filename, index, value, found)) {
+        if (binary_search_in_file(filename, index, found)) {
             if (std::find(found.begin(), found.end(), value) != found.end()) {
                 return;  // Already exists
             }
@@ -229,7 +249,7 @@ public:
     std::vector<int> find(const std::string& index) {
         std::string filename = get_filename(index);
         std::vector<int> result;
-        binary_search_in_file(filename, index, 0, result);
+        binary_search_in_file(filename, index, result);
         return result;
     }
 };
