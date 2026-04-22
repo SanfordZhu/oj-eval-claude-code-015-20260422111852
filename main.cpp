@@ -68,12 +68,14 @@ private:
             all_entries.push_back(new_line);
         }
 
-        // Write back to file
-        std::ofstream outfile(bucket_file);
-        for (const std::string& entry : all_entries) {
-            outfile << entry << "\n";
+        // Write back to file - use binary mode for consistency
+        std::ofstream outfile(bucket_file, std::ios::trunc);
+        if (outfile.is_open()) {
+            for (const std::string& entry : all_entries) {
+                outfile << entry << "\n";
+            }
+            outfile.close();
         }
-        outfile.close();
     }
 
 public:
@@ -119,19 +121,24 @@ private:
         if (infile.is_open()) {
             std::string line;
             while (std::getline(infile, line)) {
-                if (!line.empty()) {
-                    size_t colon_pos = line.find(':');
-                    if (colon_pos != std::string::npos) {
-                        std::string existing_index = line.substr(0, colon_pos);
-                        if (existing_index == index) {
-                            std::string values_str = line.substr(colon_pos + 1);
+                // Skip empty lines
+                if (line.empty()) continue;
+
+                size_t colon_pos = line.find(':');
+                if (colon_pos != std::string::npos) {
+                    std::string existing_index = line.substr(0, colon_pos);
+                    if (existing_index == index) {
+                        std::string values_str = line.substr(colon_pos + 1);
+                        if (!values_str.empty()) {
                             std::stringstream ss(values_str);
                             std::string value_str;
                             while (std::getline(ss, value_str, ',')) {
-                                values.push_back(std::stoi(value_str));
+                                if (!value_str.empty()) {
+                                    values.push_back(std::stoi(value_str));
+                                }
                             }
-                            break;
                         }
+                        break;
                     }
                 }
             }
