@@ -6,6 +6,7 @@
 #include <sstream>
 #include <cstring>
 #include <sys/stat.h>
+#include <climits>
 
 const std::string STORAGE_DIR = "storage";
 const std::string INDEX_FILE = STORAGE_DIR + "/index.dat";
@@ -103,7 +104,7 @@ public:
 
         // Find all entries with matching index
         Entry start{index, 0};
-        Entry end{index, INT32_MAX};
+        Entry end{index, INT_MAX};
 
         auto start_it = std::lower_bound(entries.begin(), entries.end(), start);
         auto end_it = std::lower_bound(entries.begin(), entries.end(), end);
