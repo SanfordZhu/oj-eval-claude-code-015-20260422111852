@@ -41,8 +41,8 @@ private:
 
         if (file_size == 0) return false;
 
-        // Each record: index (64 bytes) + value (4 bytes) = 68 bytes
-        const int RECORD_SIZE = 68;
+        // Each record: index (32 bytes) + value (4 bytes) = 36 bytes - HALF THE SIZE!
+        const int RECORD_SIZE = 36;
         int left = 0;
         int right = (file_size / RECORD_SIZE) - 1;
 
@@ -52,9 +52,9 @@ private:
             int mid = left + (right - left) / 2;
             infile.seekg(mid * RECORD_SIZE);
 
-            char buffer[65] = {0};
+            char buffer[33] = {0};
             int val;
-            infile.read(buffer, 64);
+            infile.read(buffer, 32);
             infile.read(reinterpret_cast<char*>(&val), 4);
 
             std::string current_index(buffer);
@@ -83,8 +83,8 @@ private:
             int mid = left + (right - left) / 2;
             infile.seekg(mid * RECORD_SIZE);
 
-            char buffer[65] = {0};
-            infile.read(buffer, 64);
+            char buffer[33] = {0};
+            infile.read(buffer, 32);
 
             std::string current_index(buffer);
             size_t null_pos = current_index.find('\0');
@@ -110,8 +110,8 @@ private:
             int mid = left + (right - left) / 2;
             infile.seekg(mid * RECORD_SIZE);
 
-            char buffer[65] = {0};
-            infile.read(buffer, 64);
+            char buffer[33] = {0};
+            infile.read(buffer, 32);
 
             std::string current_index(buffer);
             size_t null_pos = current_index.find('\0');
@@ -130,9 +130,9 @@ private:
         // Collect all values
         for (int i = first; i <= last; i++) {
             infile.seekg(i * RECORD_SIZE);
-            char buffer[65] = {0};
+            char buffer[33] = {0};
             int val;
-            infile.read(buffer, 64);
+            infile.read(buffer, 32);
             infile.read(reinterpret_cast<char*>(&val), 4);
             found_values.push_back(val);
         }
@@ -147,11 +147,11 @@ private:
         std::ifstream infile(filename, std::ios::binary);
 
         if (infile.is_open()) {
-            const int RECORD_SIZE = 68;
-            char buffer[65];
+            const int RECORD_SIZE = 36;  // Reduced size
+            char buffer[33];
             int val;
 
-            while (infile.read(buffer, 64)) {
+            while (infile.read(buffer, 32)) {
                 infile.read(reinterpret_cast<char*>(&val), 4);
                 std::string idx(buffer);
                 size_t null_pos = idx.find('\0');
@@ -173,9 +173,9 @@ private:
         std::ofstream outfile(filename, std::ios::binary | std::ios::trunc);
         if (outfile.is_open()) {
             for (const auto& e : entries) {
-                char buffer[64] = {0};
-                std::strncpy(buffer, e.first.c_str(), 63);
-                outfile.write(buffer, 64);
+                char buffer[32] = {0};  // Reduced to 32 bytes
+                std::strncpy(buffer, e.first.c_str(), 31);
+                outfile.write(buffer, 32);
                 outfile.write(reinterpret_cast<const char*>(&e.second), 4);
             }
             outfile.close();
@@ -188,11 +188,11 @@ private:
         std::ifstream infile(filename, std::ios::binary);
 
         if (infile.is_open()) {
-            const int RECORD_SIZE = 68;
-            char buffer[65];
+            const int RECORD_SIZE = 36;  // Reduced size
+            char buffer[33];
             int val;
 
-            while (infile.read(buffer, 64)) {
+            while (infile.read(buffer, 32)) {
                 infile.read(reinterpret_cast<char*>(&val), 4);
                 std::string idx(buffer);
                 size_t null_pos = idx.find('\0');
@@ -213,9 +213,9 @@ private:
         std::ofstream outfile(filename, std::ios::binary | std::ios::trunc);
         if (outfile.is_open()) {
             for (const auto& e : entries) {
-                char buffer[64] = {0};
-                std::strncpy(buffer, e.first.c_str(), 63);
-                outfile.write(buffer, 64);
+                char buffer[32] = {0};  // Reduced to 32 bytes
+                std::strncpy(buffer, e.first.c_str(), 31);
+                outfile.write(buffer, 32);
                 outfile.write(reinterpret_cast<const char*>(&e.second), 4);
             }
             outfile.close();
