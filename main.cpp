@@ -3,32 +3,77 @@
 #include <string>
 #include <vector>
 #include <algorithm>
-#include <filesystem>
 #include <sstream>
+#include <cstring>
+#include <unordered_map>
 
-namespace fs = std::filesystem;
+// Use a fixed number of bucket files to limit file count
+const int NUM_BUCKETS = 10;
+const std::string BASE_DIR = "storage";
 
 class FileStorage {
 private:
-    std::string base_dir = "storage";
-
-    std::string get_filename(const std::string& index) {
-        // Create a safe filename from index
-        std::string safe_index;
+    // Simple hash function to distribute indices across buckets
+    int get_bucket(const std::string& index) {
+        unsigned long hash = 0;
         for (char c : index) {
-            if (c == '/' || c == '\\' || c == ' ' || c == '\t') {
-                safe_index += '_';
-            } else {
-                safe_index += c;
-            }
+            hash = hash * 31 + c;
         }
-        return base_dir + "/" + safe_index + ".dat";
+        return hash % NUM_BUCKETS;
+    }
+
+    std::string get_bucket_filename(int bucket) {
+        return BASE_DIR + "/bucket_" + std::to_string(bucket) + ".dat";
     }
 
     void ensure_directory() {
-        if (!fs::exists(base_dir)) {
-            fs::create_directory(base_dir);
+        std::ifstream dir_check(BASE_DIR + "/.exists");
+        if (!dir_check.good()) {
+            std::system(("mkdir -p " + BASE_DIR).c_str());
+            std::ofstream marker(BASE_DIR + "/.exists");
+            marker.close();
         }
+    }
+
+    // Format: index:value1,value2,value3\n
+    void update_bucket(int bucket, const std::string& index, const std::vector<int>& values) {
+        std::string bucket_file = get_bucket_filename(bucket);
+        std::vector<std::string> all_entries;
+
+        // Read existing entries
+        std::ifstream infile(bucket_file);
+        if (infile.is_open()) {
+            std::string line;
+            while (std::getline(infile, line)) {
+                if (!line.empty()) {
+                    size_t colon_pos = line.find(':');
+                    if (colon_pos != std::string::npos) {
+                        std::string existing_index = line.substr(0, colon_pos);
+                        if (existing_index != index) {
+                            all_entries.push_back(line);
+                        }
+                    }
+                }
+            }
+            infile.close();
+        }
+
+        // Add updated entry if it has values
+        if (!values.empty()) {
+            std::string new_line = index + ":";
+            for (size_t i = 0; i < values.size(); i++) {
+                if (i > 0) new_line += ",";
+                new_line += std::to_string(values[i]);
+            }
+            all_entries.push_back(new_line);
+        }
+
+        // Write back to file
+        std::ofstream outfile(bucket_file);
+        for (const std::string& entry : all_entries) {
+            outfile << entry << "\n";
+        }
+        outfile.close();
     }
 
 public:
@@ -37,85 +82,58 @@ public:
     }
 
     void insert(const std::string& index, int value) {
-        std::string filename = get_filename(index);
-        std::vector<int> values;
+        int bucket = get_bucket(index);
+        std::vector<int> values = find_internal(bucket, index);
 
-        // Read existing values
-        std::ifstream infile(filename);
-        if (infile.is_open()) {
-            int val;
-            while (infile >> val) {
-                if (val != value) {  // Avoid duplicates
-                    values.push_back(val);
-                }
-            }
-            infile.close();
+        // Add value if not already present
+        if (std::find(values.begin(), values.end(), value) == values.end()) {
+            values.push_back(value);
+            std::sort(values.begin(), values.end());
+            update_bucket(bucket, index, values);
         }
-
-        // Add new value
-        values.push_back(value);
-
-        // Sort values
-        std::sort(values.begin(), values.end());
-
-        // Write back to file
-        std::ofstream outfile(filename);
-        for (int val : values) {
-            outfile << val << " ";
-        }
-        outfile.close();
     }
 
     void delete_entry(const std::string& index, int value) {
-        std::string filename = get_filename(index);
+        int bucket = get_bucket(index);
+        std::vector<int> values = find_internal(bucket, index);
 
-        // Check if file exists
-        if (!fs::exists(filename)) {
-            return;
-        }
-
-        std::vector<int> values;
-
-        // Read existing values
-        std::ifstream infile(filename);
-        if (infile.is_open()) {
-            int val;
-            while (infile >> val) {
-                if (val != value) {
-                    values.push_back(val);
-                }
-            }
-            infile.close();
-        }
-
-        // Write back to file
-        std::ofstream outfile(filename);
-        for (int val : values) {
-            outfile << val << " ";
-        }
-        outfile.close();
-
-        // Remove file if empty
-        if (values.empty()) {
-            fs::remove(filename);
+        // Remove value if present
+        auto it = std::find(values.begin(), values.end(), value);
+        if (it != values.end()) {
+            values.erase(it);
+            update_bucket(bucket, index, values);
         }
     }
 
     std::vector<int> find(const std::string& index) {
-        std::string filename = get_filename(index);
+        int bucket = get_bucket(index);
+        return find_internal(bucket, index);
+    }
+
+private:
+    std::vector<int> find_internal(int bucket, const std::string& index) {
         std::vector<int> values;
+        std::string bucket_file = get_bucket_filename(bucket);
 
-        // Check if file exists
-        if (!fs::exists(filename)) {
-            return values;
-        }
-
-        // Read values
-        std::ifstream infile(filename);
+        std::ifstream infile(bucket_file);
         if (infile.is_open()) {
-            int val;
-            while (infile >> val) {
-                values.push_back(val);
+            std::string line;
+            while (std::getline(infile, line)) {
+                if (!line.empty()) {
+                    size_t colon_pos = line.find(':');
+                    if (colon_pos != std::string::npos) {
+                        std::string existing_index = line.substr(0, colon_pos);
+                        if (existing_index == index) {
+                            std::string values_str = line.substr(colon_pos + 1);
+                            std::stringstream ss(values_str);
+                            std::string value_str;
+                            while (std::getline(ss, value_str, ',')) {
+                                values.push_back(std::stoi(value_str));
+                            }
+                            break;
+                        }
+                    }
+                }
             }
             infile.close();
         }
