@@ -11,32 +11,15 @@
 
 const std::string STORAGE_DIR = "storage";
 
-// Simple structure to hold index-value pairs
-struct Entry {
-    std::string index;
-    int value;
-
-    bool operator<(const Entry& other) const {
-        if (index != other.index) return index < other.index;
-        return value < other.value;
-    }
-
-    bool operator==(const Entry& other) const {
-        return index == other.index && value == other.value;
-    }
-};
-
 class FileStorage {
 private:
-    // Get filename based on first character of index
+    // Get filename based on hash of index
     std::string get_filename(const std::string& index) {
-        if (index.empty()) return STORAGE_DIR + "/_.dat";
-        char first = index[0];
-        // Use alphanumeric characters directly, others go to special file
-        if ((first >= 'a' && first <= 'z') || (first >= 'A' && first <= 'Z') || (first >= '0' && first <= '9')) {
-            return STORAGE_DIR + "/" + first + ".dat";
+        unsigned long hash = 0;
+        for (char c : index) {
+            hash = hash * 31 + c;
         }
-        return STORAGE_DIR + "/special.dat";
+        return STORAGE_DIR + "/bucket_" + std::to_string(hash % 37) + ".dat";  // 37 buckets
     }
 
     void ensure_directory() {
@@ -46,34 +29,174 @@ private:
         }
     }
 
-    std::vector<Entry> load_entries(const std::string& filename) {
-        std::vector<Entry> entries;
-        std::ifstream infile(filename);
+    // Binary search in a sorted file
+    bool binary_search_in_file(const std::string& filename, const std::string& index, int value, std::vector<int>& found_values) {
+        std::ifstream infile(filename, std::ios::binary);
+        if (!infile.is_open()) return false;
 
-        if (infile.is_open()) {
-            std::string line;
-            while (std::getline(infile, line)) {
-                if (!line.empty()) {
-                    std::istringstream iss(line);
-                    Entry e;
-                    if (iss >> e.index >> e.value) {
-                        entries.push_back(e);
+        // Get file size
+        infile.seekg(0, std::ios::end);
+        std::streamsize file_size = infile.tellg();
+        infile.seekg(0, std::ios::beg);
+
+        if (file_size == 0) return false;
+
+        // Each record: index (64 bytes) + value (4 bytes) = 68 bytes
+        const int RECORD_SIZE = 68;
+        int left = 0;
+        int right = (file_size / RECORD_SIZE) - 1;
+
+        bool found = false;
+
+        while (left <= right) {
+            int mid = left + (right - left) / 2;
+            infile.seekg(mid * RECORD_SIZE);
+
+            char buffer[65] = {0};
+            int val;
+            infile.read(buffer, 64);
+            infile.read(reinterpret_cast<char*>(&val), 4);
+
+            std::string current_index(buffer);
+            // Remove padding
+            size_t null_pos = current_index.find('\0');
+            if (null_pos != std::string::npos) {
+                current_index = current_index.substr(0, null_pos);
+            }
+
+            if (current_index == index) {
+                // Found a match, now find all entries with this index
+                found = true;
+
+                // Search backwards for first occurrence
+                int first = mid;
+                while (first > left) {
+                    infile.seekg((first - 1) * RECORD_SIZE);
+                    char temp_buffer[65] = {0};
+                    infile.read(temp_buffer, 64);
+                    std::string temp_index(temp_buffer);
+                    size_t null_pos_temp = temp_index.find('\0');
+                    if (null_pos_temp != std::string::npos) {
+                        temp_index = temp_index.substr(0, null_pos_temp);
+                    }
+                    if (temp_index == index) {
+                        first--;
+                    } else {
+                        break;
                     }
                 }
+
+                // Collect all values for this index
+                int current = first;
+                while (current <= right) {
+                    infile.seekg(current * RECORD_SIZE);
+                    char collect_buffer[65] = {0};
+                    int collect_val;
+                    infile.read(collect_buffer, 64);
+                    infile.read(reinterpret_cast<char*>(&collect_val), 4);
+
+                    std::string collect_index(collect_buffer);
+                    size_t null_pos_collect = collect_index.find('\0');
+                    if (null_pos_collect != std::string::npos) {
+                        collect_index = collect_index.substr(0, null_pos_collect);
+                    }
+
+                    if (collect_index == index) {
+                        found_values.push_back(collect_val);
+                        current++;
+                    } else {
+                        break;
+                    }
+                }
+
+                break;
+            } else if (current_index < index) {
+                left = mid + 1;
+            } else {
+                right = mid - 1;
+            }
+        }
+
+        infile.close();
+        return found;
+    }
+
+    void insert_to_file(const std::string& filename, const std::string& index, int value) {
+        // First, load all entries
+        std::vector<std::pair<std::string, int>> entries;
+        std::ifstream infile(filename, std::ios::binary);
+
+        if (infile.is_open()) {
+            const int RECORD_SIZE = 68;
+            char buffer[65];
+            int val;
+
+            while (infile.read(buffer, 64)) {
+                infile.read(reinterpret_cast<char*>(&val), 4);
+                std::string idx(buffer);
+                size_t null_pos = idx.find('\0');
+                if (null_pos != std::string::npos) {
+                    idx = idx.substr(0, null_pos);
+                }
+                entries.emplace_back(idx, val);
             }
             infile.close();
         }
 
+        // Add new entry
+        entries.emplace_back(index, value);
+
         // Sort entries
         std::sort(entries.begin(), entries.end());
-        return entries;
+
+        // Write back to file
+        std::ofstream outfile(filename, std::ios::binary | std::ios::trunc);
+        if (outfile.is_open()) {
+            for (const auto& e : entries) {
+                char buffer[64] = {0};
+                std::strncpy(buffer, e.first.c_str(), 63);
+                outfile.write(buffer, 64);
+                outfile.write(reinterpret_cast<const char*>(&e.second), 4);
+            }
+            outfile.close();
+        }
     }
 
-    void save_entries(const std::string& filename, const std::vector<Entry>& entries) {
-        std::ofstream outfile(filename, std::ios::trunc);
+    void delete_from_file(const std::string& filename, const std::string& index, int value) {
+        // Load all entries except the one to delete
+        std::vector<std::pair<std::string, int>> entries;
+        std::ifstream infile(filename, std::ios::binary);
+
+        if (infile.is_open()) {
+            const int RECORD_SIZE = 68;
+            char buffer[65];
+            int val;
+
+            while (infile.read(buffer, 64)) {
+                infile.read(reinterpret_cast<char*>(&val), 4);
+                std::string idx(buffer);
+                size_t null_pos = idx.find('\0');
+                if (null_pos != std::string::npos) {
+                    idx = idx.substr(0, null_pos);
+                }
+
+                // Skip the entry to delete
+                if (idx == index && val == value) {
+                    continue;
+                }
+                entries.emplace_back(idx, val);
+            }
+            infile.close();
+        }
+
+        // Write back to file
+        std::ofstream outfile(filename, std::ios::binary | std::ios::trunc);
         if (outfile.is_open()) {
-            for (const Entry& e : entries) {
-                outfile << e.index << " " << e.value << "\n";
+            for (const auto& e : entries) {
+                char buffer[64] = {0};
+                std::strncpy(buffer, e.first.c_str(), 63);
+                outfile.write(buffer, 64);
+                outfile.write(reinterpret_cast<const char*>(&e.second), 4);
             }
             outfile.close();
         }
@@ -86,49 +209,27 @@ public:
 
     void insert(const std::string& index, int value) {
         std::string filename = get_filename(index);
-        std::vector<Entry> entries = load_entries(filename);
 
-        // Check if entry already exists
-        Entry new_entry{index, value};
-        auto it = std::lower_bound(entries.begin(), entries.end(), new_entry);
-
-        // Only insert if not found
-        if (it == entries.end() || !(*it == new_entry)) {
-            entries.insert(it, new_entry);
-            save_entries(filename, entries);
+        // First check if it already exists
+        std::vector<int> found;
+        if (binary_search_in_file(filename, index, value, found)) {
+            if (std::find(found.begin(), found.end(), value) != found.end()) {
+                return;  // Already exists
+            }
         }
+
+        insert_to_file(filename, index, value);
     }
 
     void delete_entry(const std::string& index, int value) {
         std::string filename = get_filename(index);
-        std::vector<Entry> entries = load_entries(filename);
-        Entry target{index, value};
-
-        auto it = std::lower_bound(entries.begin(), entries.end(), target);
-        if (it != entries.end() && *it == target) {
-            entries.erase(it);
-            save_entries(filename, entries);
-        }
+        delete_from_file(filename, index, value);
     }
 
     std::vector<int> find(const std::string& index) {
         std::string filename = get_filename(index);
-        std::vector<Entry> entries = load_entries(filename);
         std::vector<int> result;
-
-        // Find all entries with matching index
-        Entry start{index, 0};
-        Entry end{index, INT_MAX};
-
-        auto start_it = std::lower_bound(entries.begin(), entries.end(), start);
-        auto end_it = std::lower_bound(entries.begin(), entries.end(), end);
-
-        for (auto it = start_it; it != end_it; ++it) {
-            if (it->index == index) {
-                result.push_back(it->value);
-            }
-        }
-
+        binary_search_in_file(filename, index, 0, result);
         return result;
     }
 };
