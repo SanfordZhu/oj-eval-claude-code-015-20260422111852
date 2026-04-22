@@ -7,9 +7,9 @@
 #include <cstring>
 #include <sys/stat.h>
 #include <climits>
+#include <unordered_map>
 
 const std::string STORAGE_DIR = "storage";
-const std::string INDEX_FILE = STORAGE_DIR + "/index.dat";
 
 // Simple structure to hold index-value pairs
 struct Entry {
@@ -28,6 +28,17 @@ struct Entry {
 
 class FileStorage {
 private:
+    // Get filename based on first character of index
+    std::string get_filename(const std::string& index) {
+        if (index.empty()) return STORAGE_DIR + "/_.dat";
+        char first = index[0];
+        // Use alphanumeric characters directly, others go to special file
+        if ((first >= 'a' && first <= 'z') || (first >= 'A' && first <= 'Z') || (first >= '0' && first <= '9')) {
+            return STORAGE_DIR + "/" + first + ".dat";
+        }
+        return STORAGE_DIR + "/special.dat";
+    }
+
     void ensure_directory() {
         struct stat st;
         if (stat(STORAGE_DIR.c_str(), &st) != 0) {
@@ -35,9 +46,9 @@ private:
         }
     }
 
-    std::vector<Entry> load_all_entries() {
+    std::vector<Entry> load_entries(const std::string& filename) {
         std::vector<Entry> entries;
-        std::ifstream infile(INDEX_FILE);
+        std::ifstream infile(filename);
 
         if (infile.is_open()) {
             std::string line;
@@ -58,8 +69,8 @@ private:
         return entries;
     }
 
-    void save_all_entries(const std::vector<Entry>& entries) {
-        std::ofstream outfile(INDEX_FILE);
+    void save_entries(const std::string& filename, const std::vector<Entry>& entries) {
+        std::ofstream outfile(filename, std::ios::trunc);
         if (outfile.is_open()) {
             for (const Entry& e : entries) {
                 outfile << e.index << " " << e.value << "\n";
@@ -74,7 +85,8 @@ public:
     }
 
     void insert(const std::string& index, int value) {
-        std::vector<Entry> entries = load_all_entries();
+        std::string filename = get_filename(index);
+        std::vector<Entry> entries = load_entries(filename);
 
         // Check if entry already exists
         Entry new_entry{index, value};
@@ -83,23 +95,25 @@ public:
         // Only insert if not found
         if (it == entries.end() || !(*it == new_entry)) {
             entries.insert(it, new_entry);
-            save_all_entries(entries);
+            save_entries(filename, entries);
         }
     }
 
     void delete_entry(const std::string& index, int value) {
-        std::vector<Entry> entries = load_all_entries();
+        std::string filename = get_filename(index);
+        std::vector<Entry> entries = load_entries(filename);
         Entry target{index, value};
 
         auto it = std::lower_bound(entries.begin(), entries.end(), target);
         if (it != entries.end() && *it == target) {
             entries.erase(it);
-            save_all_entries(entries);
+            save_entries(filename, entries);
         }
     }
 
     std::vector<int> find(const std::string& index) {
-        std::vector<Entry> entries = load_all_entries();
+        std::string filename = get_filename(index);
+        std::vector<Entry> entries = load_entries(filename);
         std::vector<int> result;
 
         // Find all entries with matching index
